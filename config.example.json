@@ -1,0 +1,57 @@
+{
+  "_comment": "Example configuration for Razer Battery Tray Monitor",
+  "_comment2": "Copy this to config.json and customize as needed",
+
+  "version": "1.0.0",
+
+  "devices": [
+    {
+      "name": "BSKV3P 35K",
+      "instanceIdPattern": "BTHLE\\DEV_*",
+      "enabled": true,
+      "description": "Razer Basilisk V3 Pro 35K Gaming Mouse"
+    },
+    {
+      "name": "BSK MOBILE",
+      "instanceIdPattern": "BTHLE\\DEV_*",
+      "enabled": true,
+      "description": "Razer Basilisk Mobile Gaming Mouse"
+    },
+    {
+      "name": "MX Master 3S",
+      "instanceIdPattern": "BTHLE\\DEV_*",
+      "enabled": true,
+      "description": "Logitech MX Master 3S (example non-Razer device)"
+    },
+    {
+      "name": "Example Disabled Device",
+      "instanceIdPattern": "BTHLE\\DEV_*",
+      "enabled": false,
+      "description": "Example: Set enabled to false to temporarily disable without removing"
+    }
+  ],
+
+  "namePatterns": [
+    "BSK*",
+    "Razer*",
+    "MX Master*",
+    "Logitech*"
+  ],
+
+  "refreshInterval": 300,
+
+  "batteryThresholds": {
+    "high": 60,
+    "medium": 30,
+    "low": 15
+  },
+
+  "_usage_notes": {
+    "devices": "Explicit list of devices to monitor. Each device can be enabled/disabled individually.",
+    "namePatterns": "Wildcard patterns (e.g., 'BSK*' matches any device starting with 'BSK'). Supports * at end only.",
+    "refreshInterval": "How often to update battery levels (in seconds). Default: 300 (5 minutes). Min: 60 (1 minute).",
+    "batteryThresholds": "Percentage thresholds for icon colors. high=green, medium=orange, low=red-orange, below low=red.",
+    "pattern_matching": "The app checks namePatterns FIRST, then devices. Devices already matched by patterns don't need to be in the devices array.",
+    "tip": "Use Configure-Devices.ps1 for interactive configuration instead of editing manually!"
+  }
+}
