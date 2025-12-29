@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
-project(RazerTray VERSION 1.0.0 LANGUAGES CXX)
+
+# Read version from version.h
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/src/version.h" VERSION_LINE REGEX "VERSION = \"[0-9]+\\.[0-9]+\\.[0-9]+\"")
+string(REGEX MATCH "[0-9]+\\.[0-9]+\\.[0-9]+" PROJECT_VERSION "${VERSION_LINE}")
+
+project(RazerTray VERSION ${PROJECT_VERSION} LANGUAGES CXX)
 
 # Use C++20 for modern features
 set(CMAKE_CXX_STANDARD 20)
@@ -30,6 +35,7 @@ set(HEADERS
     src/TrayApp.h
     src/SafeHandles.h
     src/ConfigManager.h
+    src/version.h
 )
 
 # Create Windows GUI application (no console window)
