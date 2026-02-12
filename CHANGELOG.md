@@ -5,7 +5,41 @@ All notable changes to Razer Tray will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased] - v2.0.0 (USB/libusb rewrite)
+
+### Breaking Changes
+- Complete rewrite from Bluetooth LE to USB/libusb communication
+- v1.0 source archived to `archive/v1.0/`
+- New config format planned (`razer-tray.json` replacing `config.json`)
+- Removed dependency on PowerShell config tool (`razer-config.ps1`)
+
+### Added
+- Razer USB protocol implementation (90-byte HID reports with XOR CRC)
+- libusb-based device discovery by Razer VID (`0x1532`)
+- Known device database (17 devices: mice, keyboards, mousemats, headsets)
+- Battery level query via USB control transfers
+- Transaction ID auto-detection (tries `0x1f`, `0x3f`, `0x9f`, `0xff`)
+- CLI modes: `--discover`, `--test-battery`, `--menu`, `--help`, `--version`
+- Interactive CLI menu system for device management
+- System tray with color-coded battery icon (green/yellow/orange/red)
+- Right-click context menu with device info, refresh, and exit
+- Double-click tray icon to refresh
+- 5-minute auto-refresh timer
+- Multi-device discovery and tray display
+- Special display handling for Mouse Dock Pro (shows as "Razer Mouse")
+- Comprehensive research documentation (`RESEARCH.md`)
+
+### Not Yet Implemented
+- Configuration system (load/save/auto-generate)
+- First-run auto-discovery flow
+- Charging status (disabled — interferes with battery reads)
+- `--verbose`, `--config`, `--reset-config`, `--list` commands
+
+### Technical Details
+- Statically linked libusb-1.0.29 (no runtime DLL)
+- MinGW-w64 build with C++20
+- Executable size: 295KB
+- 5 source files, 5 headers
 
 ## [1.0.0] - 2025-12-28
 

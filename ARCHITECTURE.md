@@ -1,40 +1,24 @@
-# Razer Tray - Architecture Documentation
+# Razer Tray v2.0 - Architecture Documentation
 
-**Purpose:** Internal technical documentation for understanding how Razer Tray works. Read this BEFORE searching code or asking questions to save time.
-
-**Last Updated:** 2025-12-28 (v1.0.0 initial release)
-
----
-
-## Table of Contents
-
-1. [Project Overview](#project-overview)
-2. [Project Structure](#project-structure)
-3. [Core Architecture](#core-architecture)
-4. [Execution Flow](#execution-flow)
-5. [Configuration System](#configuration-system)
-6. [Device Monitoring](#device-monitoring)
-7. [Icon Rendering](#icon-rendering)
-8. [Animation System](#animation-system)
-9. [Build System](#build-system)
-10. [Function Reference](#function-reference)
-11. [Common Development Patterns](#common-development-patterns)
-12. [Troubleshooting Guide](#troubleshooting-guide)
+**Last Updated:** 2026-02-12
+**Version:** 2.0.0-dev (in development, not yet committed to git)
 
 ---
 
-## Project Overview
+## Overview
 
-**What:** Lightweight Windows system tray application for monitoring Razer Bluetooth device battery levels
-**Language:** C++20
-**Size:** 501KB executable, ~15MB memory
-**Dependencies:** None (native Win32 APIs only)
+Razer Tray v2.0 is a complete rewrite from the v1.0 Bluetooth LE approach. It uses **libusb** for direct USB communication with Razer devices via the reverse-engineered Razer USB protocol (based on [openrazer](https://github.com/openrazer/openrazer)). This enables USB-connected devices, 2.4GHz wireless dongles, and opens the door to RGB/DPI control.
 
-**Key Technologies:**
-- Win32 API (system tray, windows, timers)
-- SetupAPI (Bluetooth device enumeration)
-- GDI+ (icon rendering)
-- Custom JSON parser (no external libraries)
+### Key Differences from v1.0
+
+| Aspect | v1.0 (Bluetooth LE) | v2.0 (USB/libusb) |
+|--------|---------------------|--------------------|
+| Communication | Windows BT GATT APIs | libusb USB control transfers |
+| Device Discovery | SetupAPI + BTHLE subsystem | libusb device enumeration by VID |
+| Protocol | Windows property keys | 90-byte Razer USB HID reports |
+| Capabilities | Battery only | Battery + future RGB/DPI/polling |
+| Dependencies | None (pure Win32) | libusb-1.0.29 (static linked) |
+| Config Tool | PowerShell (`razer-config.ps1`) | Built-in CLI menu + auto-discovery |
 
 ---
 
@@ -42,743 +26,265 @@
 
 ```
 razer-tray/
-├── src/                          # C++ source code
-│   ├── main.cpp                  # Entry point (WinMain)
-│   ├── TrayApp.h/cpp             # Main application logic
-│   ├── DeviceMonitor.h/cpp       # Bluetooth device enumeration
-│   ├── BatteryIcon.h/cpp         # Dynamic icon generation
-│   ├── ConfigManager.h/cpp       # JSON config parser
-│   ├── SafeHandles.h             # RAII wrappers for Windows handles
-│   └── version.h                 # Version constants
-│
-├── build/                        # CMake build output (gitignored)
-│   └── bin/                      # Distributable files
-│       ├── RazerTray.exe         # Compiled executable
-│       ├── config.json           # Auto-copied runtime config
-│       ├── config.example.json   # Auto-copied example config
-│       └── razer-config.ps1      # Auto-copied config tool
-│
-├── config.json                   # Source config (gitignored)
-├── config.example.json           # Example config (committed)
-├── razer-config.ps1              # Interactive config tool (committed)
-├── deploy-local.ps1              # Personal deployment script (gitignored)
-│
-├── CMakeLists.txt                # Build configuration
-├── build.bat                     # Quick build script
-├── CHANGELOG.md                  # Release history
-├── README.md                     # User-facing documentation
-├── CONFIGURATION.md              # Config guide for users
-├── DISTRIBUTION.md               # Build/release guide
-└── ARCHITECTURE.md               # This file (internal docs)
+├── src_v2_usb/                    # v2.0 source code (ACTIVE DEVELOPMENT)
+│   ├── main.cpp                   # Entry point, CLI switch routing
+│   ├── core/
+│   │   └── razer_protocol.h       # Razer USB protocol (90-byte reports, CRC)
+│   ├── devices/
+│   │   ├── device_manager.h       # DeviceManager class declaration
+│   │   ├── device_manager.cpp     # libusb init, device discovery, known device DB
+│   │   ├── razer_device.h         # RazerDevice class, BatteryStatus, DeviceInfo structs
+│   │   └── razer_device.cpp       # USB control transfers, battery queries, transaction ID detection
+│   └── ui/
+│       ├── tray_app.h             # TrayApp class declaration
+│       ├── tray_app.cpp           # Win32 system tray, battery icon rendering, context menu
+│       ├── cli_menu.h             # CLIMenu class declaration
+│       └── cli_menu.cpp           # Interactive terminal menu system
+├── archive/
+│   └── v1.0/                      # Archived v1.0 Bluetooth LE source (complete, not deleted)
+├── build_v2.bat                   # Build script (MinGW64 + libusb static)
+├── build_v2/bin/razer-tray.exe    # Compiled v2.0 binary (295KB)
+├── RESEARCH.md                    # openrazer analysis, feature catalog, phase plan
+├── ARCHITECTURE.md                # This file
+├── CHANGELOG.md                   # Release history
+└── README.md                      # User docs (still describes v1.0 - needs update for v2.0)
 ```
 
-**Git Policy:**
-- **Committed:** Source code, example config, docs, build scripts
-- **Ignored:** build/, config.json (user settings), deploy-local.ps1 (personal)
+### External Dependency
+
+- **libusb-1.0.29** at `C:\AppInstall\dev\libusb-1.0.29\`
+  - Headers: `include/libusb.h`
+  - Static lib: `MinGW64/static/libusb-1.0.a`
+  - Linked statically into the executable (no DLL needed at runtime)
 
 ---
 
-## Core Architecture
+## Component Reference
 
-### Component Overview
+### 1. Entry Point — `main.cpp`
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                     WinMain (main.cpp)                  │
-│                  Entry point, initializes               │
-└────────────────────┬────────────────────────────────────┘
-                     │
-                     ↓
-┌─────────────────────────────────────────────────────────┐
-│                 TrayApp (TrayApp.cpp)                   │
-│    Main application controller, owns all components     │
-│                                                          │
-│  ┌────────────────┐  ┌──────────────┐  ┌────────────┐  │
-│  │ DeviceMonitor  │  │ BatteryIcon  │  │ ConfigMgr  │  │
-│  │ (enumerate BT) │  │ (render icon)│  │ (load JSON)│  │
-│  └────────────────┘  └──────────────┘  └────────────┘  │
-└─────────────────────────────────────────────────────────┘
-                     │
-                     ↓
-┌─────────────────────────────────────────────────────────┐
-│              Windows Message Loop                       │
-│  Handles: Tray clicks, timers, menu commands            │
-└─────────────────────────────────────────────────────────┘
-```
+**Purpose:** CLI argument parsing and mode dispatch.
 
-### Memory Management Strategy
+| Mode | Switch | Function | Status |
+|------|--------|----------|--------|
+| Tray (default) | `--tray` or no args | `run_tray()` | Working (skeleton) |
+| Discovery | `--discover`, `-d` | `run_discovery()` | Working |
+| Battery Test | `--test-battery` | `run_test_battery()` | Working |
+| Device List | `--list`, `-l` | `run_list()` | Stub ("not yet implemented") |
+| Interactive Menu | `--menu`, `-m` | `CLIMenu::run()` | Working |
+| Version | `--version`, `-v` | `print_version()` | Working |
+| Help | `--help`, `-h` | `print_help()` | Working |
 
-**RAII Throughout:**
-- Smart pointers for heap allocations (`std::unique_ptr`)
-- Custom RAII wrappers in `SafeHandles.h` for Windows handles
-- No manual `new`/`delete` anywhere
-- Automatic cleanup on scope exit
+### 2. Razer Protocol — `core/razer_protocol.h`
 
-**Example (SafeHandles.h):**
-```cpp
-class DeviceInfoHandle {
-    HDEVINFO handle;
-public:
-    DeviceInfoHandle(HDEVINFO h) : handle(h) {}
-    ~DeviceInfoHandle() { if (isValid()) SetupDiDestroyDeviceInfoList(handle); }
-    bool isValid() const { return handle != INVALID_HANDLE_VALUE; }
-    HDEVINFO get() const { return handle; }
-};
-```
+**Purpose:** Header-only implementation of the Razer USB HID protocol.
+
+Key components:
+- **`Report` struct** (90 bytes, packed): `status`, `transaction_id`, `remaining_packets`, `protocol_type`, `data_size`, `command_class`, `command_id`, `arguments[80]`, `crc`, `reserved`
+- **`calculate_crc()`**: XOR checksum of bytes 2-87
+- **`create_battery_query()`**: Builds a battery level request (class `0x07`, cmd `0x80`)
+- **`create_charging_query()`**: Builds a charging status request (class `0x07`, cmd `0x84`)
+- **`get_battery_percent()`**: Extracts battery % from response (raw 0-255 scaled to 0-100)
+- **`get_charging_status()`**: Extracts charging boolean from response
+
+USB control transfer parameters:
+- OUT: `bmRequestType=0x21`, `bRequest=0x09` (SET_REPORT), `wValue=0x300`, `wIndex=0x02`
+- IN: `bmRequestType=0xA1`, `bRequest=0x01` (GET_REPORT), same value/index
+
+### 3. Device Manager — `devices/device_manager.cpp/h`
+
+**Purpose:** libusb lifecycle management, device discovery, known device database.
+
+Key methods:
+- **`initialize()`**: Calls `libusb_init()`, sets debug level in DEBUG builds
+- **`discover_devices()`**: Enumerates all USB devices, filters by `VID=0x1532`, reads descriptors
+- **`create_device()`**: Re-enumerates to find matching device by VID+PID+serial, returns `unique_ptr<RazerDevice>`
+- **`read_device_info()`**: Opens device temporarily to read serial, product name, manufacturer strings
+- **`get_device_name()`** / **`get_device_type()`**: Static lookups against `KNOWN_DEVICES[]` array
+
+Known device database (17 entries currently):
+- 9 mice (Basilisk V3 variants, DeathAdder V3 Pro, Viper V3 Pro)
+- 4 keyboards (BlackWidow V3/V4)
+- 2 mousemats (Firefly V2/V2 Pro)
+- 2 headsets (BlackShark V2 Pro, Kraken V3 Pro)
+
+### 4. Razer Device — `devices/razer_device.cpp/h`
+
+**Purpose:** Individual device control via USB control transfers.
+
+Key methods:
+- **`open()`**: Opens device handle, detaches kernel driver if needed, claims interface 0
+- **`close()`**: Releases interface, reattaches kernel driver, closes handle
+- **`get_battery_status()`**: Sends battery query, waits 10ms, reads response, returns `optional<BatteryStatus>`
+- **`detect_transaction_id()`**: Tries IDs `{0x1f, 0x3f, 0x9f, 0xff}` sequentially until one returns valid battery data
+- **`send_report()`** / **`receive_report()`**: USB control transfer wrappers
+
+Important notes:
+- Uses `interface_number = 0` (confirmed working for Mouse Dock Pro)
+- Charging status query is **disabled** (line 116-118) — commented as "needs investigation", may interfere with subsequent reads
+- Debug output (`[DEBUG]` prefixed) is still active in `get_battery_status()` — should be removed or made conditional before release
+
+### 5. Tray App — `ui/tray_app.cpp/h`
+
+**Purpose:** Windows system tray integration with battery icon.
+
+Architecture:
+- Creates a message-only window (`HWND_MESSAGE`) for the Win32 message pump
+- Registers `Shell_NotifyIconW` with custom `WM_TRAYICON` callback
+- Renders 16x16 RGBA battery icon via `BITMAPV5HEADER` + direct pixel manipulation
+- 5-minute auto-refresh timer (`SetTimer` with `TIMER_REFRESH`)
+
+Tray features implemented:
+- Battery-shaped icon with color coding (green/yellow/orange/red based on %)
+- Tooltip showing device name + battery % + charging status
+- Right-click context menu: device info (disabled text), "Refresh Now", "Exit"
+- Double-click to refresh
+- Multi-device display in menu (shows all discovered devices)
+- Special handling for Mouse Dock Pro (`PID 0x00A4`) — displays as "Razer Mouse"
+
+### 6. CLI Menu — `ui/cli_menu.cpp/h`
+
+**Purpose:** Interactive terminal-based menu for device management.
+
+Menu structure:
+1. Discover Devices — runs libusb scan, shows VID:PID, serial, type
+2. List Configured Devices — stub ("not yet implemented")
+3. Test Battery Reading — queries battery on all found devices with visual bar
+4. Start System Tray Monitor — stub ("not yet implemented")
+5. About — version info and feature list
+0. Exit
+
+Note: Menu has a duplicate `[0] Exit` line (line 37 in `cli_menu.cpp`).
 
 ---
 
 ## Execution Flow
 
-### 1. Startup Sequence
-
-**File:** `main.cpp` (lines 5-14)
-
-```cpp
-int WINAPI WinMain(...) {
-    TrayApp app(hInstance);
-    if (!app.initialize()) return 1;
-    app.run();  // Message loop
-    return 0;
-}
-```
-
-### 2. TrayApp Initialization
-
-**File:** `TrayApp.cpp` (lines 44-62)
-
-**Order of operations:**
-1. `createWindow()` - Creates hidden message-only window
-2. `addTrayIcon()` - Adds icon to system tray
-3. `discoverDevices()` - Initial Bluetooth scan
-4. `refreshDevices()` - Query battery levels
-5. `updateTrayIcon()` - Show battery status
-6. `SetTimer(TIMER_REFRESH)` - Start 5-minute auto-refresh
-
-### 3. Configuration Loading
-
-**File:** `TrayApp.cpp` (lines 19-37)
-
-**Fallback strategy:**
-```
-Try load config.json
-  ↓
-  ├─ Success → Use loaded config
-  │
-  └─ Fail → getDefaultConfig()
-      ↓
-      Try save defaults
-      ↓
-      Continue with defaults
-```
-
-**Default config:**
-- `namePatterns: ["BSK*", "Razer*"]`
-- `refreshInterval: 300` (5 minutes)
-- `batteryThresholds: {high: 60, medium: 30, low: 15}`
-
-### 4. Device Discovery Flow
-
-**File:** `DeviceMonitor.cpp` (lines 42-117)
+### Default Launch (Tray Mode)
 
 ```
-enumerateRazerDevices()
-  ↓
-SetupDiGetClassDevs("BTHLE") → Get all BT LE devices
-  ↓
-For each device:
-  ├─ Get instance ID (BTHLE\DEV_...)
-  ├─ Get friendly name
-  ├─ Check if matches config patterns
-  │   ├─ namePatterns[] checked first
-  │   └─ devices[] array checked second
-  ├─ If match → Add to devices list
-  └─ Continue
-  ↓
-Return vector<unique_ptr<RazerDevice>>
+main() → run_tray(hInstance)
+  → TrayApp::initialize()
+    → DeviceManager::initialize()         # libusb_init
+    → TrayApp::discover_devices()         # Scan USB, filter VID 0x1532
+      → DeviceManager::discover_devices()
+      → DeviceManager::create_device()    # For each found device
+    → register_window_class()             # WNDCLASS for message pump
+    → create_window()                     # HWND_MESSAGE hidden window
+    → create_tray_icon()                  # Shell_NotifyIconW
+    → SetTimer(REFRESH_INTERVAL)          # 5-minute auto-refresh
+    → refresh_battery_status()            # Initial battery read
+  → TrayApp::run()                        # GetMessage() loop (blocks)
 ```
 
-### 5. Battery Query Flow
-
-**File:** `DeviceMonitor.cpp` (lines 130-161)
+### Battery Query Flow
 
 ```
-getBatteryLevel(instanceId)
-  ↓
-CM_Locate_DevNodeW() → Get device node
-  ↓
-CM_Get_DevNode_PropertyW(DEVPKEY_Device_BatteryLevel)
-  ↓
-Return optional<int> (0-100)
+RazerDevice::get_battery_status()
+  → detect_transaction_id()              # Try 0x1f, 0x3f, 0x9f, 0xff
+    → create_battery_query(id)           # Build 90-byte report
+    → send_report()                      # libusb_control_transfer (OUT)
+    → sleep 10ms                         # Wait for device processing
+    → receive_report()                   # libusb_control_transfer (IN)
+    → Check status==0x02 && battery>=0   # Validate response
+  → create_battery_query(detected_id)    # Use detected transaction ID
+  → send_report()
+  → sleep 10ms
+  → receive_report()
+  → get_battery_percent()                # raw*100/255
+  → return BatteryStatus(percentage, is_charging=false)
 ```
-
-**Property Key:** `{104EA319-6EE2-4701-BD47-8DDBF425BBE5}` property 2
-
-### 6. Refresh Animation Flow
-
-**File:** `TrayApp.cpp` (lines 199-215, 244-325)
-
-```
-refreshDevices() called (double-click/timer/menu)
-  ↓
-startRefreshAnimation()
-  ├─ Set isRefreshing = true
-  ├─ Start TIMER_REFRESH_ANIMATION (100ms)
-  └─ Tooltip → "Refreshing..."
-  ↓
-deviceMonitor->updateDeviceInfo() (instant)
-GetLocalTime(&lastRefreshTime)
-  ↓
-SetTimer(TIMER_ANIMATION_STOP, 3000ms)
-  ↓
-Animation continues for 3 seconds...
-  ├─ updateRefreshAnimation() called every 100ms
-  └─ Draws spinning white dot on icon
-  ↓
-TIMER_ANIMATION_STOP fires
-  ↓
-stopRefreshAnimation()
-  ├─ Kill animation timers
-  └─ updateTrayIcon() with final battery data
-```
-
-### 7. Window Message Handling
-
-**File:** `TrayApp.cpp` (lines 367-405)
-
-**Key messages:**
-- `WM_TRAYICON + WM_LBUTTONDBLCLK` → refreshDevices()
-- `WM_TRAYICON + WM_RBUTTONUP` → showContextMenu()
-- `WM_TIMER + TIMER_REFRESH` → Auto-refresh (every 5 min)
-- `WM_TIMER + TIMER_REFRESH_ANIMATION` → Animation frame
-- `WM_TIMER + TIMER_ANIMATION_STOP` → Stop animation
-- `WM_COMMAND + ID_MENU_REFRESH` → Manual refresh
-- `WM_COMMAND + ID_MENU_EXIT` → Quit
-
----
-
-## Configuration System
-
-### Config Schema
-
-**File:** `config.json` / `config.example.json`
-
-```json
-{
-  "version": "1.0.0",
-  "devices": [
-    {
-      "name": "BSKV3P 35K",
-      "instanceIdPattern": "BTHLE\\DEV_*",
-      "enabled": true,
-      "description": "Razer Basilisk V3 Pro"
-    }
-  ],
-  "namePatterns": ["BSK*", "Razer*"],
-  "refreshInterval": 300,
-  "batteryThresholds": {
-    "high": 60,
-    "medium": 30,
-    "low": 15
-  }
-}
-```
-
-### Pattern Matching Logic
-
-**File:** `ConfigManager.cpp` (lines 167-201)
-
-**Two-tier matching:**
-1. **namePatterns[]** - Checked first, wildcard support (`*` at end only)
-2. **devices[]** - Checked second, explicit device names
-
-**Example:**
-- Pattern `"BSK*"` matches "BSKV3P 35K", "BSK MOBILE"
-- Explicit device "Razer DeathAdder" matches exact name
-
-### Config File Location
-
-**Priority order:**
-1. Same directory as executable: `.\config.json`
-2. If missing: Auto-generate defaults
-3. Example config: `config.example.json` (reference only)
-
-**Auto-generation:**
-- Triggered on first run if no config.json
-- Creates default with `BSK*` and `Razer*` patterns
-- Saves to disk (fails silently if no permissions)
-
----
-
-## Device Monitoring
-
-### Bluetooth Enumeration
-
-**File:** `DeviceMonitor.cpp` (lines 45-53)
-
-**API:** `SetupDiGetClassDevs()`
-
-**Parameters:**
-- ClassGuid: `nullptr` (all device classes)
-- Enumerator: `"BTHLE"` (Bluetooth Low Energy only)
-- Flags: `DIGCF_ALLCLASSES | DIGCF_PRESENT` (all classes, currently connected)
-
-**Returns:** Handle to device information set
-
-### Instance ID Format
-
-**Pattern:** `BTHLE\DEV_{MAC_ADDRESS}\{GUID}`
-
-**Example:** `BTHLE\DEV_E0D55E9B23C8\7&12ABC&0&BluetoothLE00000000_DEADBEEF`
-
-**Check:** Lines 93-96 - Must start with `"BTHLE\"`
-
-### Device Properties Queried
-
-**1. Friendly Name (SPDRP_FRIENDLYNAME)**
-- **API:** `SetupDiGetDeviceRegistryPropertyW()`
-- **Returns:** Device display name (e.g., "BSKV3P 35K")
-- **Used for:** Pattern matching, tooltip display
-
-**2. Battery Level (DEVPKEY_Device_BatteryLevel)**
-- **API:** `CM_Get_DevNode_PropertyW()`
-- **GUID:** `{104EA319-6EE2-4701-BD47-8DDBF425BBE5}` property 2
-- **Type:** BYTE (0-100)
-- **Returns:** `optional<int>` (nullopt if unavailable)
-
-**3. Connection Status (DEVPKEY_Device_IsConnected)**
-- **API:** `CM_Get_DevNode_PropertyW()`
-- **GUID:** `{83da6326-97a6-4088-9453-a1923f573b29}` property 15
-- **Type:** DEVPROP_BOOLEAN
-- **Returns:** true/false
-
-### RazerDevice Structure
-
-**File:** `DeviceMonitor.h` (lines 9-14)
-
-```cpp
-struct RazerDevice {
-    std::wstring name;              // Friendly name
-    std::wstring instanceId;        // Device instance ID
-    std::optional<int> batteryLevel; // 0-100 or nullopt
-    bool isConnected;               // Connection status
-};
-```
-
----
-
-## Icon Rendering
-
-### Battery Icon Design
-
-**File:** `BatteryIcon.cpp`
-
-**Icon size:** 16x16 pixels
-**Format:** Standard Windows icon (HICON)
-
-**Visual elements:**
-- Battery outline (3px wide, gray)
-- Battery terminal (small rectangle on right side)
-- Fill color (based on battery level)
-- Empty space (white background)
-
-### Color Coding
-
-**File:** `BatteryIcon.cpp` (lines 25-41)
-
-| Range | Color | RGB | Meaning |
-|-------|-------|-----|---------|
-| 60-100% | Green | (0, 200, 0) | Good |
-| 30-59% | Orange | (255, 165, 0) | Medium |
-| 15-29% | Red-Orange | (255, 100, 0) | Low |
-| 0-14% | Red | (220, 0, 0) | Critical |
-| No battery | Gray | (128, 128, 128) | Unknown/disconnected |
-
-### Icon Creation Process
-
-**Function:** `createBatteryIcon(optional<int> level)`
-
-**Steps:**
-1. Initialize GDI+ (COM initialization)
-2. Create 16x16 bitmap
-3. Draw battery outline (rounded rectangle)
-4. Draw battery terminal
-5. Calculate fill height based on level
-6. Fill with color based on thresholds
-7. Convert GDI+ Bitmap to HICON
-8. Cleanup GDI+ objects
-9. Return HICON (caller must DestroyIcon)
-
-**Usage pattern:**
-```cpp
-HICON icon = batteryIcon->createBatteryIcon(85);  // Green, 85% filled
-// ... use icon ...
-DestroyIcon(icon);  // Caller responsible for cleanup
-```
-
----
-
-## Animation System
-
-### Refresh Animation
-
-**Purpose:** Visual feedback during battery refresh (even though query is instant)
-
-**Duration:** Exactly 3 seconds
-**Frame rate:** 10 FPS (100ms per frame)
-**Frames:** 8 positions in full rotation
-
-### Animation Components
-
-**Timers:**
-- `TIMER_REFRESH_ANIMATION` (ID: 2) - 100ms interval, draws frames
-- `TIMER_ANIMATION_STOP` (ID: 3) - 3000ms one-shot, stops animation
-
-**State:**
-- `isRefreshing` (bool) - Animation active flag
-- `animationFrame` (int 0-7) - Current frame in rotation
-
-### Animation Drawing
-
-**File:** `TrayApp.cpp` (lines 273-325)
-
-**Algorithm:**
-```cpp
-// Calculate spinner position (small white dot orbiting icon center)
-angle = (animationFrame * 2π) / 8
-dotX = centerX + radius * cos(angle)
-dotY = centerY + radius * sin(angle)
-
-// Draw 3x3 white dot at position
-Ellipse(dotX-1, dotY-1, dotX+2, dotY+2)
-```
-
-**Visual:** White dot rotates around battery icon clockwise
-
-### Tooltip During Animation
-
-**Normal:** "Razer Tray\nUpdated: 14:32:15\nBSKV3P 35K: 85%"
-**Animating:** "Refreshing..." (simple message)
 
 ---
 
 ## Build System
 
-### CMake Configuration
+### Build Command
 
-**File:** `CMakeLists.txt`
-
-**Key features:**
-- Reads version from `src/version.h` automatically
-- Sets C++20 standard
-- Links Windows libraries (setupapi, cfgmgr32, shell32, gdi32, gdiplus)
-- Creates GUI application (no console window)
-- Auto-copies runtime files to `build/bin/`
-
-**Version parsing (lines 3-7):**
-```cmake
-file(STRINGS "src/version.h" VERSION_LINE REGEX "VERSION = \"[0-9]+\\.[0-9]+\\.[0-9]+\"")
-string(REGEX MATCH "[0-9]+\\.[0-9]+\\.[0-9]+" PROJECT_VERSION "${VERSION_LINE}")
-project(RazerTray VERSION ${PROJECT_VERSION} LANGUAGES CXX)
+```batch
+build_v2.bat
 ```
 
-**Auto-copy post-build (lines 58-68):**
-```cmake
-add_custom_command(TARGET RazerTray POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_SOURCE_DIR}/config.json" "${CMAKE_BINARY_DIR}/bin/config.json"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_SOURCE_DIR}/config.example.json" "${CMAKE_BINARY_DIR}/bin/config.example.json"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_SOURCE_DIR}/razer-config.ps1" "${CMAKE_BINARY_DIR}/bin/razer-config.ps1"
-)
-```
+### Compiler Configuration
 
-### Build Script
+- **Compiler:** g++ (MinGW-w64)
+- **Standard:** C++20
+- **Flags:** `-Wall -Wextra -O2`
+- **Static libraries:** `libusb-1.0.a`, `setupapi`, `ole32`, `advapi32`, `gdi32`, `shell32`, `user32`
+- **Output:** `build_v2/bin/razer-tray.exe` (295KB)
 
-**File:** `build.bat`
+### Source Files Compiled
 
-**Actions:**
-1. Create `build/` directory
-2. Run CMake with MinGW Makefiles generator
-3. Run `mingw32-make`
-4. Auto-copy runtime files (via CMake post-build)
-5. Display executable size
-
-**Output:** `build/bin/RazerTray.exe` (501KB)
-
-### Linked Libraries
-
-| Library | Purpose |
-|---------|---------|
-| setupapi | Device enumeration (`SetupDiGetClassDevs`) |
-| cfgmgr32 | Device properties (`CM_Get_DevNode_PropertyW`) |
-| shell32 | System tray (`Shell_NotifyIconW`) |
-| gdi32 | Basic drawing (device contexts) |
-| gdiplus | Advanced graphics (icon rendering) |
-| ole32 | COM initialization (required by GDI+) |
-| comctl32 | Common controls |
+1. `src_v2_usb/main.cpp`
+2. `src_v2_usb/devices/razer_device.cpp`
+3. `src_v2_usb/devices/device_manager.cpp`
+4. `src_v2_usb/ui/cli_menu.cpp`
+5. `src_v2_usb/ui/tray_app.cpp`
 
 ---
 
-## Function Reference
+## Git Status (as of 2026-02-12)
 
-### TrayApp.cpp
+**Branch:** `main` (3 commits, all from v1.0 release)
 
-| Function | Line | Purpose |
-|----------|------|---------|
-| `TrayApp()` | 9-38 | Constructor, loads config, creates monitors |
-| `initialize()` | 44-62 | Create window, tray icon, initial refresh, start timer |
-| `createWindow()` | 64-90 | Register and create message-only window |
-| `addTrayIcon()` | 92-111 | Add icon to system tray |
-| `updateTrayIcon()` | 113-162 | Update icon and tooltip with battery data |
-| `showContextMenu()` | 173-189 | Display right-click menu |
-| `refreshDevices()` | 199-215 | Trigger battery refresh with animation |
-| `getTooltipText()` | 214-237 | Generate tooltip text with devices and timestamp |
-| `formatTimestamp()` | 237-242 | Format time as "Updated: HH:MM:SS" |
-| `startRefreshAnimation()` | 244-259 | Begin 3-second animation |
-| `stopRefreshAnimation()` | 261-271 | End animation and update final icon |
-| `updateRefreshAnimation()` | 273-325 | Draw single animation frame |
-| `windowProc()` | 350-405 | Windows message handler (static) |
+**Uncommitted state:**
+- v1.0 source files show as "deleted" (moved to `archive/v1.0/`)
+- All v2.0 files are untracked: `RESEARCH.md`, `archive/`, `build_v2.bat`, `src_v2_usb/`
+- **No v2.0 code has been committed yet**
 
-### DeviceMonitor.cpp
-
-| Function | Line | Purpose |
-|----------|------|---------|
-| `enumerateRazerDevices()` | 42-117 | Scan for BT LE devices matching config |
-| `getDeviceNode()` | 119-128 | Convert instance ID to device node |
-| `getBatteryLevel()` | 130-161 | Query battery percentage (0-100) |
-| `isDeviceConnected()` | 163-190 | Check if device is currently connected |
-| `updateDeviceInfo()` | 192-197 | Update battery/connection for all devices |
-
-### ConfigManager.cpp
-
-| Function | Line | Purpose |
-|----------|------|---------|
-| `loadConfig()` | 6-76 | Load and parse config.json |
-| `saveConfig()` | 78-88 | Save config to JSON file |
-| `getDefaultConfig()` | 90-101 | Create default config (BSK*, Razer*) |
-| `getDefaultConfigPath()` | 103-112 | Get executable directory + config.json |
-| `matchesDevicePatterns()` | 167-201 | Check if device name matches config |
-| `serializeJson()` | 92-139 | Convert config to JSON string |
-
-### BatteryIcon.cpp
-
-| Function | Line | Purpose |
-|----------|------|---------|
-| `createBatteryIcon()` | 17-122 | Generate 16x16 battery icon with fill |
-| `getBatteryColor()` | 25-41 | Map battery level to RGB color |
+**Branches:**
+- `main` — active development
+- `archive/bluetooth-version` — v1.0 Bluetooth LE snapshot
 
 ---
 
-## Common Development Patterns
+## Known Issues & Technical Debt
 
-### Adding a New Device Property
+1. **Charging status disabled** — `razer_device.cpp:116-118`: The charging query (`CMD 0x84`) was disabled because it "seems to interfere with subsequent battery reads." Needs investigation — possibly a timing issue or wrong interface.
 
-**Example: Add "DeviceModel" to RazerDevice**
+2. **Debug output in production path** — `razer_device.cpp:104-114`: `[DEBUG]` lines in `get_battery_status()` print to stdout during tray mode. Should be removed or gated behind a `--verbose` flag.
 
-1. **Update struct** (`DeviceMonitor.h`)
-   ```cpp
-   struct RazerDevice {
-       std::wstring name;
-       std::wstring instanceId;
-       std::optional<int> batteryLevel;
-       bool isConnected;
-       std::wstring deviceModel;  // NEW
-   };
-   ```
+3. **Duplicate menu item** — `cli_menu.cpp:37`: `[0] Exit` appears twice in the main menu.
 
-2. **Query property** (`DeviceMonitor.cpp`)
-   ```cpp
-   // In enumerateRazerDevices() after getting name
-   WCHAR modelBuffer[256] = {};
-   if (SetupDiGetDeviceRegistryPropertyW(..., SPDRP_HARDWAREID, ...)) {
-       device->deviceModel = std::wstring(modelBuffer);
-   }
-   ```
+4. **Transaction ID re-detection** — `razer_device.cpp:84-86`: The `if (transaction_id == 0x1f)` check means detect runs every call since `0x1f` is also the default. Should cache after first successful detection.
 
-3. **Display in tooltip** (`TrayApp.cpp::getTooltipText()`)
-   ```cpp
-   ss << L"\n" << device->name << L" (" << device->deviceModel << L"): "
-      << device->batteryLevel.value() << L"%";
-   ```
+5. **No WinUSB driver check** — If the Razer device doesn't have WinUSB installed (requires Zadig for first-time setup), `libusb_open()` fails silently with a generic error. Should provide user-friendly guidance.
 
-### Adding a New Timer
-
-**Example: Add periodic config reload**
-
-1. **Add timer ID** (`TrayApp.h`)
-   ```cpp
-   static constexpr UINT TIMER_CONFIG_RELOAD = 4;
-   ```
-
-2. **Start timer** (`TrayApp::initialize()`)
-   ```cpp
-   SetTimer(hwnd, TIMER_CONFIG_RELOAD, 60000, nullptr);  // 1 minute
-   ```
-
-3. **Handle timer** (`TrayApp::windowProc()`)
-   ```cpp
-   case WM_TIMER:
-       if (wParam == TIMER_CONFIG_RELOAD) {
-           app->reloadConfig();
-       }
-       break;
-   ```
-
-4. **Cleanup** (`TrayApp::cleanup()`)
-   ```cpp
-   KillTimer(hwnd, TIMER_CONFIG_RELOAD);
-   ```
-
-### Adding a Config Option
-
-**Example: Add "showDisconnected" option**
-
-1. **Update config struct** (`ConfigManager.h`)
-   ```cpp
-   struct Config {
-       std::wstring version;
-       std::vector<DeviceConfig> devices;
-       std::vector<std::wstring> namePatterns;
-       UINT refreshInterval;
-       BatteryThresholds batteryThresholds;
-       bool showDisconnected;  // NEW
-   };
-   ```
-
-2. **Parse from JSON** (`ConfigManager.cpp::loadConfig()`)
-   ```cpp
-   // After parsing batteryThresholds
-   if (showDisconnectedPos != std::string::npos) {
-       size_t start = content.find(':', showDisconnectedPos) + 1;
-       std::string value = content.substr(start, content.find_first_of(",}", start) - start);
-       config.showDisconnected = (value.find("true") != std::string::npos);
-   }
-   ```
-
-3. **Include in defaults** (`ConfigManager.cpp::getDefaultConfig()`)
-   ```cpp
-   config.showDisconnected = false;
-   ```
-
-4. **Serialize to JSON** (`ConfigManager.cpp::serializeJson()`)
-   ```cpp
-   json << "  \"showDisconnected\": " << (config.showDisconnected ? "true" : "false") << "\n";
-   ```
-
-5. **Use in logic** (`TrayApp.cpp::updateTrayIcon()`)
-   ```cpp
-   for (const auto& device : devices) {
-       if (device->isConnected || config->showDisconnected) {
-           // Include in tooltip
-       }
-   }
-   ```
+6. **String encoding** — `tray_app.cpp:271,359`: ASCII-to-wide string conversion (`wstring(name.begin(), name.end())`) only works for ASCII device names. Should use proper UTF-8 conversion.
 
 ---
 
-## Troubleshooting Guide
+## What's Implemented vs. Planned
 
-### Build Issues
+### Working Now
+- [x] libusb initialization and cleanup
+- [x] Device discovery by Razer VID (`0x1532`)
+- [x] Known device database (17 devices)
+- [x] Battery level query via USB protocol
+- [x] Transaction ID auto-detection
+- [x] CLI modes: `--discover`, `--test-battery`, `--menu`, `--help`, `--version`
+- [x] System tray with battery icon (color-coded)
+- [x] Tooltip with device name and battery %
+- [x] Right-click context menu (device info, refresh, exit)
+- [x] Double-click to refresh
+- [x] 5-minute auto-refresh timer
+- [x] Multi-device discovery and display
 
-**Error: `cannot find -lsetupapi`**
-- **Cause:** MinGW libraries not in PATH
-- **Fix:** Ensure MinGW bin directory in PATH, reinstall MinGW
+### Not Yet Implemented (Phase 1 MVP Remaining)
+- [ ] Configuration system (`razer-tray.json` load/save)
+- [ ] First-run auto-discovery flow (interactive device selection)
+- [ ] Charging status query (disabled, needs debugging)
+- [ ] `--list` command (shows configured devices from config)
+- [ ] `--verbose` flag for debug output
+- [ ] `--config FILE` for alternate config path
+- [ ] `--reset-config` to re-run setup
 
-**Error: `version.h: No such file or directory`**
-- **Cause:** CMake can't find version header
-- **Fix:** Verify `src/version.h` exists, rebuild from clean
-
-**Error: `Permission denied` linking RazerTray.exe**
-- **Cause:** Executable still running from previous test
-- **Fix:** `taskkill /F /IM RazerTray.exe`, then rebuild
-
-### Runtime Issues
-
-**"No devices detected" always shows**
-- **Check 1:** Devices are Bluetooth LE (not classic BT or USB)
-- **Check 2:** Devices are paired AND connected to Windows
-- **Check 3:** Device names match config patterns
-- **Debug:** Run `Get-PnpDevice | Where-Object {$_.InstanceId -like "BTHLE*"}`
-
-**Battery level shows as "?" or missing**
-- **Cause:** Device doesn't expose battery property
-- **Fix:** Not all BT devices support battery reporting
-- **Verify:** `Get-PnpDeviceProperty -InstanceId "BTHLE\..." -KeyName "DEVPKEY_Device_BatteryLevel"`
-
-**Config.json not loading**
-- **Check 1:** File in same directory as RazerTray.exe
-- **Check 2:** Valid JSON syntax (use jsonlint.com)
-- **Check 3:** File encoding is UTF-8
-- **Fallback:** App uses defaults if load fails
-
-**Tooltip not updating**
-- **Check:** Animation completes (3 seconds)
-- **Check:** Auto-refresh timer running (5 minutes)
-- **Manual:** Double-click icon to force refresh
-
-### Development Issues
-
-**Memory leak detected**
-- **Check:** All `createBatteryIcon()` calls followed by `DestroyIcon()`
-- **Check:** All RAII handles have proper destructors
-- **Tool:** Use MSVC /analyze or Dr. Memory
-
-**Animation jittery**
-- **Check:** Timer interval (should be 100ms)
-- **Check:** No blocking operations in `updateRefreshAnimation()`
-- **Fix:** Move expensive operations out of animation loop
-
-**Config changes not reflected**
-- **Cause:** Config loaded once at startup
-- **Fix:** Restart application after editing config.json
-- **Future:** Add config reload timer or menu option
-
----
-
-## Notes for Future Development
-
-### Planned Features
-
-**1. Chroma Lighting Control**
-- Research: Reverse engineer Razer Chroma SDK for Bluetooth
-- Alternative: OpenRazer Windows port
-- Challenges: Proprietary protocol, USB/BT differences
-
-**2. USB/2.4GHz Dongle Support**
-- Change enumerator from "BTHLE" to also check "USB"
-- Different property keys may be needed
-- May require HID API instead of SetupAPI
-
-**3. Battery Notifications**
-- Add balloon tooltip on low battery
-- Check: `NIF_INFO` flag in `Shell_NotifyIconW()`
-- Config: Add threshold for notification trigger
-
-**4. Multi-device Icon**
-- Show lowest battery of all devices
-- Or: Cycle through devices every N seconds
-- Or: Composite icon showing multiple batteries
-
-### Code Quality Guidelines
-
-**When adding code:**
-- Use RAII for all resource management
-- Prefer `std::optional` over nullable pointers
-- Use `const` wherever possible
-- Document non-obvious algorithms
-- Follow existing naming conventions (camelCase for functions, m_prefix for members)
-
-**Testing checklist:**
-- Test with 0 devices connected
-- Test with 1 device
-- Test with multiple devices
-- Test config missing, invalid JSON, empty file
-- Test with device disconnecting during operation
-
----
-
-**Document Version:** 1.0.0
-**Last Updated:** 2025-12-28
-**Maintainer:** Gronsten
+### Future (Phase 2-3, per RESEARCH.md)
+- [ ] RGB basic controls (on/off, spectrum, static color)
+- [ ] DPI switching (preset stages)
+- [ ] Polling rate adjustment
+- [ ] Low battery notifications
+- [ ] Multi-device tray icons
+- [ ] Effect sync across devices
+- [ ] Advanced RGB effects
+- [ ] Persistence to device memory
